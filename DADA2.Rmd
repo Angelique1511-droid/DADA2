@@ -1,75 +1,77 @@
 ---
 title: "DADA2"
 output: html_document
+keep_md: true
 date: "2025-10-05"
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
+# I. Le chargement des données. 
 
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
-```
-
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+Afin de travailler les données du fichier MiSeqSOP, il nous faut, dans un premier temps, installer et charger le package DADA2. 
 
 ```{r}
 library(dada2); packageVersion("dada2")
 ```
-#ensuite il faut installer MiSeq_SOP avec la commande wget dans le terminal
-#wget https://mothur.s3.us-east-2.amazonaws.com/wiki/miseqsopdata.zip
-#puis il faut unzip MySeq_SOP avec la commande unzip toujours dans le terminal
+
+Puis, il faut télécharger les données du fichier MiSeq_SOP avec la commande wget dans le terminal. (wget https://mothur.s3.us-east-2.amazonaws.com/wiki/miseqsopdata.zip)
+
+Comme les fichiers MiSeqSOP installés sont des fichiers .zip, il est nécessaire de les décompresser afin d'accéder aux données. (unzip miseqsopdata.zip)
+
+Afin de faciliter le traitement des données du fichier MiSeqSOP, nous pouvons créer une nouvelle variable à laquelle nous assignons le chemin vers le fichier MiSeqSOP. 
 
 ```{r}
-path <- "~/DADA2/MiSeq_SOP" # CHANGE ME to the directory containing the fastq files after unzipping.
+path <- "~/DADA2/MiSeq_SOP" 
 list.files(path)
 ```
 
+#II. Le traitement des données. 
+##a. Les reads "forward" et "reverse". 
+
+Le fichier MiSeqSOP contient les données de séquençage des deux différents reads dits "forward" et "reverse". Afin de traiter les données, il est indispensable de séparer les deux types de reads. Pour ce faire, il faut créer deux variables fnFs qui contient les reads "forward" et fnRs qui contient les reads "reverse". 
+
 ```{r}
-# Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
 fnFs <- sort(list.files(path, pattern="_R1_001.fastq", full.names = TRUE))
 fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
-# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
 sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
 ```
+
+##b. Qualité des reads
+
+Nous pouvons ensuite évaluer la qualité des reads "forward" et "reverse" à l'aide de la commande plotQualityProfile du package DADA2. 
 
 ```{r}
 plotQualityProfile(fnFs[1:2])
 ```
+Ici, la ligne verte qui indique le score de qualité moyen démontre que les reads "forward" sont de bonne qualité.
 
 ```{r}
 plotQualityProfile(fnRs[1:2])
 ```
+Ici, le profil de qualité nous indique que les reads "reverse" sont de moins bonne qualité que les reads "forward".
+
+##c. Filter and Trim
+
+Cette commande nous permet de filtrer et de tronquer les séquences des reads R1 et R2 afin d'obtenir un chevauchement suffisamment long permettant d'aligner R1 et R2. Il faut d'abord créer deux variables filtFs et filtRs qui contiennent les séquences tronquées des reads "forward" et "reverse" respectivement.
 
 ```{r}
-# Place filtered files in filtered/ subdirectory
 filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
 filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
 names(filtFs) <- sample.names
 names(filtRs) <- sample.names
 ```
 
+Puis, il nous faut créer une autre variable qui contient tous les morceaux de séquences tronquées. La fonction truncQ nous permet notamment de filtrer les reads en fonction de leur score de qualité. Ici, "truncQ=2" signifie que les séquences avec un score de qualité inférieur à 20 ne seront pas inclues.
+
 ```{r}
 out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(240,160),
               maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
-              compress=TRUE, multithread=TRUE) # On Windows set multithread=FALSE
+              compress=TRUE, multithread=TRUE) 
 head(out)
 ```
+
+##d. Les taux d'erreur
+
+Chaque jeu de données a une répartition d'erreur qui lui est propre. La commande "learnErrors" du package DADA2 se base sur nos données afin de reconnaître le schéma d'erreur présent. 
 
 ```{r}
 errF <- learnErrors(filtFs, multithread=TRUE)
@@ -79,9 +81,14 @@ errF <- learnErrors(filtFs, multithread=TRUE)
 errR <- learnErrors(filtRs, multithread=TRUE)
 ```
 
+Par la suite, grâce à la focntion plotErrors, nous pouvons visualiser la fréquence de chaque type d'erreur (A2A,A2C,...) en fonction du score de qualité.
+
 ```{r}
 plotErrors(errF, nominalQ=TRUE)
 ```
+##e. Sample Inference
+
+Les deux lignes de codes suivantes permettent de corriger ce que le package DADA2 estime être des erreurs de séqeunçage en fonction des taux d'erreur préalablement définis. 
 
 ```{r}
 dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
@@ -95,11 +102,18 @@ dadaRs <- dada(filtRs, err=errR, multithread=TRUE)
 dadaFs[[1]]
 ```
 
+##f. Le regroupement des paires de séquences 
+
+Il nous est maintenant possible de regrouper les reads "forward" et "reverse" de sorte à obtenir des séquences complètes sans erreur. 
+
 ```{r}
 mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
-# Inspect the merger data.frame from the first sample
 head(mergers[[1]])
 ```
+
+##g. Table ASV
+
+La fonction "seqtab" nous permet de construire une table de séquences sous forme de matrice d'observation. 
 
 ```{r}
 seqtab <- makeSequenceTable(mergers)
@@ -107,9 +121,12 @@ dim(seqtab)
 ```
 
 ```{r}
-# Inspect distribution of sequence lengths
 table(nchar(getSequences(seqtab)))
 ```
+
+##h. Les chimères
+
+Parfois, pendant le séquençage par synthèse, l'ADN polymérase bloque au niveau d'une région conservée de l'ARNr 16S et ne termine pas la réplication. De ce fait, cette séquence incomplète sera lue et interprétée comme appartenant à plusieurs bactéries différentes créant des chimères. La fonction "removeBimeraDenovo" du package DADA2 nous permet de nous débarasser des chimères
 
 ```{r}
 seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
@@ -120,31 +137,41 @@ dim(seqtab.nochim)
 sum(seqtab.nochim)/sum(seqtab)
 ```
 
+##i. Vérification du progrès
+
+Nous pouvons aussi faire un suivi des différentes étapes effectuées afin d'évaluer notre progrès. Pour ce faire, nous examinons le nombre de séquences qui ont franchies chaques étapes du tutoriel.  
+
 ```{r}
 getN <- function(x) sum(getUniques(x))
 track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
-# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
 colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
 rownames(track) <- sample.names
 head(track)
 ```
 
-# ensuite il faut installer le fichier silva_nr_v132_train_set.fa.gz en utilisant la commande wget dans le terminal
-# wget https://zenodo.org/records/1172783/files/silva_nr_v132_train_set.fa.gz?download=1
+##j. L'attribution taxonomique
+
+La fonction assignTaxonomy permet de mettre en commun un ensemble de séquences à classer (issu de nos données) et un ensemble de séquences de référence avec une taxonomie connue (issu d'une base de données) et produit des affectations taxonomiques. La base de données Silva est celle utilisée ici afin d'effectuer l'attribution taxonomique.
+
+Il nous faut donc télécharger le fichier silva_nr_v132_train_set.fa.gz que nous placerons ensuite dans une nouvelle variable. (wget https://zenodo.org/records/1172783/files/silva_nr_v132_train_set.fa.gz?download=1)
 
 ```{r}
 taxa <- assignTaxonomy(seqtab.nochim, "~/DADA2/silva_nr_v132_train_set.fa.gz", multithread=TRUE)
 ```
 
 ```{r}
-taxa.print <- taxa # Removing sequence rownames for display only
+taxa.print <- taxa
 rownames(taxa.print) <- NULL
 head(taxa.print)
 ```
 
+##k. Évaluation de la précision
+
+Le fichier MiSeqSOP utilisé contient les données de 20 souches bactériennes de séquences connues formant ainsi un contrôle qui nous permet d'évaluer la précision de DADA2. Pour ce faire, nous comparons les variants de séquence déduits par DADA2 à la composition attendue de la communauté.
+
 ```{r}
 unqs.mock <- seqtab.nochim["Mock",]
-unqs.mock <- sort(unqs.mock[unqs.mock>0], decreasing=TRUE) # Drop ASVs absent in the Mock
+unqs.mock <- sort(unqs.mock[unqs.mock>0], decreasing=TRUE) 
 cat("DADA2 inferred", length(unqs.mock), "sample sequences present in the Mock community.\n")
 ```
 
@@ -153,6 +180,13 @@ mock.ref <- getSequences(file.path(path, "HMP_MOCK.v35.fasta"))
 match.ref <- sum(sapply(names(unqs.mock), function(x) any(grepl(x, mock.ref))))
 cat("Of those,", sum(match.ref), "were exact matches to the expected reference sequences.\n")
 ```
+
+#III. Phyloseq
+##a. Le traitement de données
+
+Phyloseq fournit un ensemble de classes et d’outils pour faciliter l’importation, le stockage, l’analyse et l’affichage graphique des données consensus de microbiomes.
+
+Avant de procéder, il nous faut installer le package phyloseq ainsi que le package Biostrings qui facilite la manipulation des fichiers fasta de taille importante ainsi que le package ggplot2 qui nous permet de faire des graphiques.  
 
 ```{r}
 library(phyloseq); packageVersion("phyloseq")
@@ -170,6 +204,8 @@ library(ggplot2); packageVersion("ggplot2")
 theme_set(theme_bw())
 ```
 
+Ensuite, il nous faut créer un dataframe à partir des noms d’échantillons et des données correspondantes, puis y ajouter une information de temporalité indiquant “early” ou “late”.
+
 ```{r}
 samples.out <- rownames(seqtab.nochim)
 subject <- sapply(strsplit(samples.out, "D"), `[`, 1)
@@ -182,12 +218,16 @@ samdf$When[samdf$Day>100] <- "Late"
 rownames(samdf) <- samples.out
 ```
 
+Nous pouvons par la suite créer une variable phyloseq à partir des données traités en DADA2.
+
 ```{r}
 ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
                sample_data(samdf), 
                tax_table(taxa))
 ps <- prune_samples(sample_names(ps) != "Mock", ps) # Remove mock sample
 ```
+
+Il nous est ensuite possible de modifier les noms de chaque ASV de sorte à ce qu'ils soient plus courts et figurent dans les tableaux et graphiques tout en ayant la possibilité de récupérer les séquences d’ADN correspondant à chaque ASV, à partir des nouveaux noms, selon les besoins.
 
 ```{r}
 dna <- Biostrings::DNAStringSet(taxa_names(ps))
@@ -197,12 +237,19 @@ taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
 ps
 ```
 
+##b. La diversité alpha
+
+La commande "plot_richness" permet de faire des graphiques illustrant les différents indices de diversité alpha tels que l'indice de Shannon ou encore celui de Simpson. 
+
 ```{r}
 plot_richness(ps, x="Day", measures=c("Shannon", "Simpson"), color="When")
 ```
 
+##c. Les ordinations
+
+La commande plot_ordination du package phyloseq nous permet aussi d'effectuer des oridnations afin de graphiquement représenter des relations plus complexes entre les différentes données. Pour ce faire, nous devons d'abord modifier nos données de sorte à ce que l'indice de dissimilarité de Bray-Curtis puisse être appliquée. 
+
 ```{r}
-# Transform data to proportions as appropriate for Bray-Curtis distances
 ps.prop <- transform_sample_counts(ps, function(otu) otu/sum(otu))
 ord.nmds.bray <- ordinate(ps.prop, method="NMDS", distance="bray")
 ```
@@ -210,6 +257,10 @@ ord.nmds.bray <- ordinate(ps.prop, method="NMDS", distance="bray")
 ```{r}
 plot_ordination(ps.prop, ord.nmds.bray, color="When", title="Bray NMDS")
 ```
+
+##d. Les diagrammes en barre
+
+Il nous est aussi possible d'illustrer les résultats du séquençage de nos échantillons par des diagrammes en barre à l'aide de la commande plot_bar.
 
 ```{r}
 top20 <- names(sort(taxa_sums(ps), decreasing=TRUE))[1:20]
